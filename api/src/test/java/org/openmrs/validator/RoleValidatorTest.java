@@ -9,21 +9,22 @@
  */
 package org.openmrs.validator;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import org.junit.jupiter.api.Test;
 import org.openmrs.Role;
 import org.openmrs.test.jupiter.BaseContextSensitiveTest;
+import org.openmrs.util.RoleConstants;
 import org.springframework.validation.BindException;
 import org.springframework.validation.Errors;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests methods on the {@link RoleValidator} class.
  */
 public class RoleValidatorTest extends BaseContextSensitiveTest {
-	
+
 	/**
 	 * @see RoleValidator#validate(Object,Errors)
 	 */
@@ -36,18 +37,18 @@ public class RoleValidatorTest extends BaseContextSensitiveTest {
 		Errors errors = new BindException(role, "type");
 		//new RoleValidator().validate(role, errors);
 		//Assert.assertTrue(errors.hasFieldErrors("role"));
-		
+
 		role.setRole("");
 		errors = new BindException(role, "role");
 		new RoleValidator().validate(role, errors);
 		assertTrue(errors.hasFieldErrors("role"));
-		
+
 		role.setRole(" ");
 		errors = new BindException(role, "role");
 		new RoleValidator().validate(role, errors);
 		assertTrue(errors.hasFieldErrors("role"));
 	}
-	
+
 	/**
 	 * @see RoleValidator#validate(Object,Errors)
 	 */
@@ -56,43 +57,64 @@ public class RoleValidatorTest extends BaseContextSensitiveTest {
 		Role role = new Role();
 		role.setRole("Bowling race car driver");
 		role.setDescription(null);
-		
+
 		Errors errors = new BindException(role, "type");
 		new RoleValidator().validate(role, errors);
 		assertFalse(errors.hasFieldErrors("description"));
-		
+
 		role.setDescription("");
 		errors = new BindException(role, "role");
 		new RoleValidator().validate(role, errors);
 		assertFalse(errors.hasFieldErrors("description"));
-		
+
 		role.setDescription(" ");
 		errors = new BindException(role, "role");
 		new RoleValidator().validate(role, errors);
 		assertFalse(errors.hasFieldErrors("description"));
 	}
-	
+
 	/**
 	 * @see RoleValidator#validate(Object,Errors)
 	 */
+	@Test
+	public void validate_shouldFailValidationIfAnotherRolesNameDiffersOnlyInCase() {
+		Role role = new Role("system developer", "some text");
+
+		Errors errors = new BindException(role, "type");
+		new RoleValidator().validate(role, errors);
+
+		assertTrue(errors.hasFieldErrors("role"));
+		assertEquals("Role.duplicateName", errors.getFieldError("role").getCode());
+	}
+
+	@Test
+	public void validate_shouldPassValidationForAnExistingRoleUnderItsOwnName() {
+		Role role = new Role(RoleConstants.SUPERUSER, "some text");
+
+		Errors errors = new BindException(role, "type");
+		new RoleValidator().validate(role, errors);
+
+		assertFalse(errors.hasFieldErrors("role"));
+	}
+
 	@Test
 	public void validate_shouldFailValidationIfRoleHasLeadingOrTrailingSpace() {
 		Role role = new Role();
 		role.setDescription("some text");
 		role.setRole(" Bowling race car driver");
-		
+
 		Errors errors = new BindException(role, "type");
 		new RoleValidator().validate(role, errors);
 		assertTrue(errors.hasFieldErrors("role"));
 		assertEquals("error.trailingSpaces", errors.getFieldError("role").getCode());
-		
+
 		role.setRole("Bowling race car driver ");
 		errors = new BindException(role, "role");
 		new RoleValidator().validate(role, errors);
 		assertTrue(errors.hasFieldErrors("role"));
 		assertEquals("error.trailingSpaces", errors.getFieldError("role").getCode());
 	}
-	
+
 	/**
 	 * @see RoleValidator#validate(Object,Errors)
 	 */
@@ -101,13 +123,13 @@ public class RoleValidatorTest extends BaseContextSensitiveTest {
 		Role role = new Role();
 		role.setRole("Bowling race car driver");
 		role.setDescription("You don't bowl or race fast cars");
-		
+
 		Errors errors = new BindException(role, "type");
 		new RoleValidator().validate(role, errors);
-		
+
 		assertFalse(errors.hasErrors());
 	}
-	
+
 	/**
 	 * @see RoleValidator#validate(Object,Errors)
 	 */
@@ -116,27 +138,27 @@ public class RoleValidatorTest extends BaseContextSensitiveTest {
 		Role role = new Role();
 		role.setRole("Bowling race car driver");
 		role.setDescription("description");
-		
+
 		Errors errors = new BindException(role, "type");
 		new RoleValidator().validate(role, errors);
-		
+
 		assertFalse(errors.hasErrors());
 	}
-	
+
 	/**
 	 * @see RoleValidator#validate(Object,Errors)
 	 */
 	@Test
 	public void validate_shouldFailValidationIfFieldLengthsAreNotCorrect() {
 		Role role = new Role();
-		role
-		        .setRole("too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text");
-		role
-		        .setDescription("too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text");
-		
+		role.setRole(
+		    "too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text");
+		role.setDescription(
+		    "too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text too long text");
+
 		Errors errors = new BindException(role, "type");
 		new RoleValidator().validate(role, errors);
-		
+
 		assertTrue(errors.hasFieldErrors("role"));
 	}
 }

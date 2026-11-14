@@ -1,0 +1,401 @@
+/**
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/. OpenMRS is also distributed under
+ * the terms of the Healthcare Disclaimer located at http://openmrs.org/license.
+ *
+ * Copyright (C) OpenMRS Inc. OpenMRS is a registered trademark and the OpenMRS
+ * graphic logo is a trademark of OpenMRS Inc.
+ */
+package org.openmrs.api.context;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import org.openmrs.Person;
+import org.openmrs.PersonName;
+import org.openmrs.User;
+import org.openmrs.api.APIAuthenticationException;
+import org.openmrs.api.PersonService;
+import org.openmrs.api.UserService;
+import org.openmrs.security.UserKeyGenerator;
+import org.openmrs.test.jupiter.BaseContextSensitiveTest;
+import org.openmrs.util.OpenmrsConstants;
+import org.openmrs.util.PrivilegeConstants;
+import org.openmrs.util.RoleConstants;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.interceptor.SimpleKey;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mockStatic;
+
+public class UserContextTest extends BaseContextSensitiveTest {
+
+	@Autowired
+	private UserService userService;
+
+	@Autowired
+	private PersonService personService;
+
+	Person testPerson;
+
+	User testUser;
+
+	@BeforeEach
+	void createUser() {
+		testPerson = new Person();
+		testPerson.addName(new PersonName("Carroll", "", "Deacon"));
+		testPerson.setGender("U");
+		testPerson = personService.savePerson(testPerson);
+
+		testUser = new User();
+		testUser.setUsername("testUser");
+		testUser.setPerson(testPerson);
+		testUser = userService.createUser(testUser, "Test1234");
+	}
+
+	@AfterEach
+	void deleteUser() {
+		userService.purgeUser(testUser);
+		personService.purgePerson(testPerson);
+	}
+
+	@Test
+	public void hasPrivilege_shouldMatchAProxyPrivilegeCaseInsensitively() {
+		// proxy privileges were the one privilege comparison still using equals rather than
+		// equalsIgnoreCase; logged out, the proxy list is the only thing that can grant
+		Context.getUserContext().logout();
+		Context.addProxyPrivilege("Proxy Case Test Privilege");
+		try {
+			assertTrue(Context.hasPrivilege("PROXY CASE TEST PRIVILEGE"));
+			assertTrue(Context.hasPrivilege("proxy case test privilege"));
+		} finally {
+			Context.removeProxyPrivilege("Proxy Case Test Privilege");
+			// other tests in this class need privileges, and nothing re-authenticates between methods
+			Context.authenticate("admin", "test");
+		}
+	}
+
+	@Test
+	public void removeProxyPrivilege_shouldMatchCaseInsensitivelyAndRemoveOnlyOneInstance() {
+		// a nested read can stack the same privilege on top of the one its caller added, so one remove
+		// must undo exactly one add - even now that the match ignores case
+		Context.getUserContext().logout();
+		Context.addProxyPrivilege("Proxy Case Test Privilege");
+		Context.addProxyPrivilege("Proxy Case Test Privilege");
+		try {
+			Context.removeProxyPrivilege("PROXY CASE TEST PRIVILEGE");
+			assertTrue(Context.hasPrivilege("Proxy Case Test Privilege"), "one add should remain");
+
+			Context.removeProxyPrivilege("proxy case test privilege");
+			assertFalse(Context.hasPrivilege("Proxy Case Test Privilege"), "both adds should now be undone");
+		} finally {
+			Context.removeProxyPrivilege("Proxy Case Test Privilege");
+			Context.authenticate("admin", "test");
+		}
+	}
+
+	@Test
+	void getDefaultLocationId_shouldGetDefaultLocationById() {
+		// arrange
+		Context.getUserContext().setLocationId(null);
+		testUser.setUserProperty(OpenmrsConstants.USER_PROPERTY_DEFAULT_LOCATION, "1");
+		userService.saveUser(testUser);
+
+		// act
+		Integer locationId = Context.getUserContext().getDefaultLocationId(testUser);
+
+		// assert
+		assertThat(locationId, equalTo(1));
+	}
+
+	@Test
+	void getDefaultLocationId_shouldGetDefaultLocationByUuid() {
+		// arrange
+		Context.getUserContext().setLocationId(null);
+		testUser.setUserProperty(OpenmrsConstants.USER_PROPERTY_DEFAULT_LOCATION, "8d6c993e-c2cc-11de-8d13-0010c6dffd0f");
+		userService.saveUser(testUser);
+
+		// act
+		Integer locationId = Context.getUserContext().getDefaultLocationId(testUser);
+
+		// assert
+		assertThat(locationId, equalTo(1));
+	}
+
+	@Test
+	void getDefaultLocationId_shouldReturnNullForInvalidId() {
+		// arrange
+		Context.getUserContext().setLocationId(null);
+		testUser.setUserProperty(OpenmrsConstants.USER_PROPERTY_DEFAULT_LOCATION, String.valueOf(Integer.MAX_VALUE));
+		userService.saveUser(testUser);
+
+		// act
+		Integer locationId = Context.getUserContext().getDefaultLocationId(testUser);
+
+		// assert
+		assertThat(locationId, nullValue());
+	}
+
+	@Test
+	void getDefaultLocationId_shouldReturnNullForInvalidUuid() {
+		// arrange
+		Context.getUserContext().setLocationId(null);
+		testUser.setUserProperty(OpenmrsConstants.USER_PROPERTY_DEFAULT_LOCATION, "0e32f474-eca5-4cc2-a64d-53b086f27e52");
+		userService.saveUser(testUser);
+
+		// act
+		Integer locationId = Context.getUserContext().getDefaultLocationId(testUser);
+
+		// assert
+		assertThat(locationId, nullValue());
+	}
+
+	@Test
+	void authenticate_shouldUseTheSchemeThisContextWasConstructedWith() {
+		// UserContext(AuthenticationScheme) is public API, and before 3.0.0 authenticate(...) invoked that
+		// instance directly. Routing through Spring Security's AuthenticationManager must not quietly
+		// swap it for the globally configured scheme - "test-scheme" is what BasicAuthenticated carries
+		// back only if TestUsernameAuthenticationScheme is the one that ran
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+
+		Authenticated authenticated = userContext.authenticate(new TestUsernameCredentials("admin"));
+
+		assertThat(authenticated.getAuthenticationScheme(), is("test-scheme"));
+	}
+
+	@Test
+	void authenticate_shouldFailClosedWhenTheAuthenticationManagerAnswersWithAForeignToken() {
+		// the authenticationManager bean is a plain, overridable @Bean resolved by name, so a module can
+		// replace it or place its own provider first. The result must then be a ContextAuthenticationException
+		// - the exception authenticate(...) documents - rather than a ClassCastException
+		AuthenticationManager foreign = authentication -> new TestingAuthenticationToken("admin", "n/a");
+		try (MockedStatic<Context> context = mockStatic(Context.class, Mockito.CALLS_REAL_METHODS)) {
+			context.when(() -> Context.getRegisteredComponent("authenticationManager", AuthenticationManager.class))
+			        .thenReturn(foreign);
+			UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+
+			ContextAuthenticationException exception = assertThrows(ContextAuthenticationException.class,
+			    () -> userContext.authenticate(new TestUsernameCredentials("admin")));
+
+			assertThat(exception.getMessage(), containsString("AuthenticatedResultToken"));
+		}
+	}
+
+	@Test
+	void addProxyPrivilege_shouldAddMultiplePrivileges() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+
+		// act
+		userContext.addProxyPrivilege("Privilege1", "Privilege2", "Privilege3");
+
+		// assert
+		assertThat(userContext.hasPrivilege("Privilege1"), is(true));
+		assertThat(userContext.hasPrivilege("Privilege2"), is(true));
+		assertThat(userContext.hasPrivilege("Privilege3"), is(true));
+	}
+
+	@Test
+	void addProxyPrivilege_shouldThrowExceptionForNullArray() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+
+		// act & assert
+		assertThrows(IllegalArgumentException.class, () -> userContext.addProxyPrivilege((String[]) null));
+	}
+
+	@Test
+	void addProxyPrivilege_shouldThrowExceptionForNullString() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+
+		// act & assert
+		assertThrows(IllegalArgumentException.class, () -> userContext.addProxyPrivilege((String) null));
+	}
+
+	@Test
+	void removeProxyPrivilege_shouldRemoveMultiplePrivileges() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+		userContext.addProxyPrivilege("Privilege1");
+		userContext.addProxyPrivilege("Privilege2");
+		userContext.addProxyPrivilege("Privilege3");
+
+		// act
+		userContext.removeProxyPrivilege("Privilege1", "Privilege3");
+
+		// assert
+		assertThat(userContext.hasPrivilege("Privilege1"), is(false));
+		assertThat(userContext.hasPrivilege("Privilege2"), is(true));
+		assertThat(userContext.hasPrivilege("Privilege3"), is(false));
+	}
+
+	@Test
+	void removeProxyPrivilege_shouldHandleNullArrayGracefully() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+		userContext.addProxyPrivilege("Privilege1");
+
+		// act
+		userContext.removeProxyPrivilege((String[]) null);
+
+		// assert - should still have the privilege since null was passed
+		assertThat(userContext.hasPrivilege("Privilege1"), is(true));
+	}
+
+	@Test
+	void removeProxyPrivilege_shouldHandleNullStringGracefully() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+		userContext.addProxyPrivilege("Privilege1");
+
+		// act
+		userContext.removeProxyPrivilege((String) null);
+
+		// assert - should still have the privilege since null was passed
+		assertThat(userContext.hasPrivilege("Privilege1"), is(true));
+	}
+
+	@Test
+	void removeProxyPrivilege_shouldHandleNonExistentPrivilegeGracefully() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+
+		// act & assert
+		assertDoesNotThrow(() -> userContext.removeProxyPrivilege("Privilege 1"));
+	}
+
+	@Test
+	void proxyPrivileges_shouldStackCorrectly() {
+		// arrange
+		UserContext userContext = new UserContext(new TestUsernameAuthenticationScheme());
+
+		// act - deep nesting
+		userContext.addProxyPrivilege("Privilege1");
+		try {
+			userContext.addProxyPrivilege("Privilege1");
+			try {
+				userContext.addProxyPrivilege("Privilege1");
+				try {
+					userContext.addProxyPrivilege("Privilege1");
+				} finally {
+					userContext.removeProxyPrivilege("Privilege1");
+				}
+			} finally {
+				userContext.removeProxyPrivilege("Privilege1");
+			}
+		} finally {
+			userContext.removeProxyPrivilege("Privilege1");
+		}
+
+		// assert
+		assertThat(userContext.hasPrivilege("Privilege1"), is(true));
+	}
+
+	@Test
+	void becomeUser_shouldDenyANonSuperuserWithAnAPIAuthenticationException() {
+		// what this threw before 3.0.0, which is now also an AccessDeniedException
+		Context.becomeUser("3-4");
+		try {
+			APIAuthenticationException denial = assertThrows(APIAuthenticationException.class,
+			    () -> Context.becomeUser("admin"));
+			assertThat(denial.getMessage(), is("You must be a superuser to assume another user's identity"));
+		} finally {
+			// deleteUser() purges as the superuser this test stopped being
+			authenticate();
+		}
+	}
+
+	/**
+	 * A separate context logged in as {@link #testUser}, whose user is detached as a web session's is
+	 * on every request after login.
+	 */
+	private UserContext loggedInAsTestUser() {
+		Context.flushSession();
+		UserContext session = new UserContext(Context.getAuthenticationScheme());
+		session.authenticate(new UsernamePasswordCredentials("testUser", "Test1234"));
+		Context.evictFromSession(session.getAuthenticatedUser());
+		return session;
+	}
+
+	@Test
+	void hasPrivilege_shouldIgnoreARoleAddedToTheAuthenticatedUserInMemory() {
+		UserContext session = loggedInAsTestUser();
+		Context.setUserContext(session);
+		try {
+			session.getAuthenticatedUser().addRole(userService.getRole(RoleConstants.SUPERUSER));
+
+			assertFalse(session.hasPrivilege(PrivilegeConstants.EDIT_USERS));
+		} finally {
+			authenticate();
+		}
+	}
+
+	@Test
+	void getAuthenticatedUserId_shouldKeyUserCachesByTheRecordedIdWhenTheUsersIdIsChangedInMemory() {
+		UserContext session = loggedInAsTestUser();
+		Context.setUserContext(session);
+		Integer userId = testUser.getUserId();
+		try {
+			session.getAuthenticatedUser().setUserId(1);
+
+			assertThat(Context.getAuthenticatedUserId(), is(userId));
+			assertThat(new UserKeyGenerator().generate(null, null), is(new SimpleKey(userId)));
+		} finally {
+			session.getAuthenticatedUser().setUserId(userId);
+			authenticate();
+		}
+	}
+
+	@Test
+	void refreshAuthenticatedUser_shouldKeepTheRecordedIdWhenTheUsersIdIsChangedInMemory() {
+		UserContext session = loggedInAsTestUser();
+		Context.setUserContext(session);
+		try {
+			// refreshing makes the user the session's managed copy, whose id can be changed until the next flush
+			session.refreshAuthenticatedUser();
+			session.getAuthenticatedUser().setUserId(1);
+			session.refreshAuthenticatedUser();
+
+			assertThat(session.getAuthenticatedUserId(), is(testUser.getUserId()));
+			assertFalse(session.hasRole(RoleConstants.SUPERUSER));
+		} finally {
+			Context.evictFromSession(session.getAuthenticatedUser());
+			authenticate();
+		}
+	}
+
+	@Test
+	void refreshAuthenticatedUser_shouldNotLoadAnotherUserWhenTheUsersUuidIsChangedInMemory() {
+		String adminUuid = userService.getUser(1).getUuid();
+		UserContext session = loggedInAsTestUser();
+		Context.setUserContext(session);
+		try {
+			session.refreshAuthenticatedUser();
+			session.getAuthenticatedUser().setUuid(adminUuid);
+			session.refreshAuthenticatedUser();
+			session.refreshAuthenticatedUser();
+
+			assertThat(session.getAuthenticatedUserId(), is(testUser.getUserId()));
+			assertFalse(session.hasRole(RoleConstants.SUPERUSER));
+		} finally {
+			// users are equal by uuid, so authenticate() would otherwise take this user for the admin
+			session.getAuthenticatedUser().setUuid(testUser.getUuid());
+			Context.evictFromSession(session.getAuthenticatedUser());
+			authenticate();
+		}
+	}
+}

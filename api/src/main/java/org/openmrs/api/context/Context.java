@@ -9,8 +9,8 @@
  */
 package org.openmrs.api.context;
 
+import java.sql.Connection;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -20,18 +20,20 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.Future;
 
-import javax.mail.Authenticator;
-import javax.mail.PasswordAuthentication;
-import javax.mail.Session;
+import jakarta.mail.Authenticator;
+import jakarta.mail.PasswordAuthentication;
+import jakarta.mail.Session;
 
 import org.aopalliance.aop.Advice;
 import org.apache.commons.lang3.StringUtils;
 import org.openmrs.Allergen;
 import org.openmrs.GlobalProperty;
+import org.openmrs.OpenmrsObject;
 import org.openmrs.PersonName;
 import org.openmrs.Privilege;
 import org.openmrs.Role;
 import org.openmrs.User;
+import org.openmrs.aop.AOPConfig;
 import org.openmrs.api.APIException;
 import org.openmrs.api.AdministrationService;
 import org.openmrs.api.CohortService;
@@ -42,6 +44,7 @@ import org.openmrs.api.DiagnosisService;
 import org.openmrs.api.EncounterService;
 import org.openmrs.api.FormService;
 import org.openmrs.api.LocationService;
+import org.openmrs.api.MedicationDispenseService;
 import org.openmrs.api.ObsService;
 import org.openmrs.api.OpenmrsService;
 import org.openmrs.api.OrderService;
@@ -54,6 +57,7 @@ import org.openmrs.api.SerializationService;
 import org.openmrs.api.UserService;
 import org.openmrs.api.VisitService;
 import org.openmrs.api.db.ContextDAO;
+import org.openmrs.event.outbox.tasks.OutboxTaskSchedulerInitializer;
 import org.openmrs.hl7.HL7Service;
 import org.openmrs.logic.LogicService;
 import org.openmrs.messagesource.MessageSourceService;
@@ -67,7 +71,8 @@ import org.openmrs.notification.MessageService;
 import org.openmrs.notification.mail.MailMessageSender;
 import org.openmrs.notification.mail.velocity.VelocityMessagePreparator;
 import org.openmrs.scheduler.SchedulerService;
-import org.openmrs.scheduler.SchedulerUtil;
+import org.openmrs.security.OpenmrsAuthenticationToken;
+import org.openmrs.util.ConfigUtil;
 import org.openmrs.util.DatabaseUpdateException;
 import org.openmrs.util.DatabaseUpdater;
 import org.openmrs.util.InputRequiredException;
@@ -83,6 +88,8 @@ import org.springframework.aop.Advisor;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 /**
  * Represents an OpenMRS <code>Context</code>, which may be used to authenticate to the database and
@@ -90,8 +97,8 @@ import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
  * <br>
  * The Context is split into a {@link UserContext} and {@link ServiceContext}. The UserContext is
  * lightweight and there is an instance for every user logged into the system. The ServiceContext is
- * heavier and it contains each service class. This is more static and there is only one ServiceContext
- * per OpenMRS instance. <br>
+ * heavier and it contains each service class. This is more static and there is only one
+ * ServiceContext per OpenMRS instance. <br>
  * <br>
  * Both the {@link UserContext} and the {@link ServiceContext} should not be used directly. This
  * context class has methods to pass through to the currently defined UserContext for the thread and
@@ -108,9 +115,7 @@ import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
  * database.</li>
  * </ol>
  * <br>
- * Example usage:
- *
- * <pre>
+ * Example usage: <pre>
  * 	public static void main(String[] args) {
  * 		Context.startup("jdbc:mysql://localhost:3306/db-name?autoReconnect=true", "openmrs-db-user", "3jknfjkn33ijt", new Properties());
  * 		try {
@@ -132,24 +137,31 @@ import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
  */
 public class Context {
 
-	private static final Logger log = LoggerFactory.getLogger(Context.class);
-
 	// Global resources
 	private static ContextDAO contextDAO;
 
-	private static Session mailSession;
+	private static volatile Session mailSession;
 
-	// Using "wrapper" (Object array) around UserContext to avoid ThreadLocal
-	// bug in Java 1.5
-	private static final ThreadLocal<Object[] /* UserContext */> userContextHolder = new ThreadLocal<>();
-
-	private static ServiceContext serviceContext;
+	private static volatile ServiceContext serviceContext;
 
 	private static Properties runtimeProperties = new Properties();
 
 	private static Properties configProperties = new Properties();
 
 	private static AuthenticationScheme authenticationScheme;
+
+	/**
+	 * The authoritative, per-thread store for the current {@link UserContext}. Setting the
+	 * {@code UserContext} copies this into {@link SecurityContextHolder}, which is how Spring
+	 * Security's machinery gets a handle to the context.
+	 * <p>
+	 * It is initialized before {@link #log}: creating the logger can start log4j, and
+	 * {@link org.openmrs.logging.OpenmrsConfigurationFactory} calls {@link #isSessionOpen()} while it
+	 * configures logging, which then happens while this class is still being initialized.
+	 */
+	private static final ThreadLocal<UserContext> userContextHolder = new ThreadLocal<>();
+
+	private static final Logger log = LoggerFactory.getLogger(Context.class);
 
 	/**
 	 * Default public constructor
@@ -191,78 +203,92 @@ public class Context {
 
 		try {
 			authenticationScheme = Context.getServiceContext().getApplicationContext().getBean(AuthenticationScheme.class); // manual autowiring (from a module)
-			log.info("An authentication scheme override was provided. Using this one in place of the OpenMRS default authentication scheme.");
-		}
-		catch(NoUniqueBeanDefinitionException e) {
-			log.error("Multiple authentication schemes overrides are being provided, this is currently not supported. Sticking to OpenMRS default authentication scheme.");
-		}
-		catch(NoSuchBeanDefinitionException e) {
+			log.info(
+			    "An authentication scheme override was provided. Using this one in place of the OpenMRS default authentication scheme.");
+		} catch (NoUniqueBeanDefinitionException e) {
+			log.error(
+			    "Multiple authentication schemes overrides are being provided, this is currently not supported. Sticking to OpenMRS default authentication scheme.");
+		} catch (NoSuchBeanDefinitionException e) {
 			log.debug("No authentication scheme override was provided. Sticking to OpenMRS default authentication scheme.");
-		}
-		catch(BeansException e){
-			log.error("Fatal error encountered when injecting the authentication scheme override. Sticking to OpenMRS default authentication scheme.");
+		} catch (BeansException e) {
+			log.error(
+			    "Fatal error encountered when injecting the authentication scheme override. Sticking to OpenMRS default authentication scheme.");
 		}
 	}
 
 	/**
 	 * Loads a class with an instance of the OpenmrsClassLoader. Convenience method equivalent to
 	 * OpenmrsClassLoader.getInstance().loadClass(className);
+	 * <p>
+	 * <strong>Should</strong> load class with the OpenmrsClassLoader
 	 *
 	 * @param className the class to load
 	 * @return the class that was loaded
 	 * @throws ClassNotFoundException
-	 * <strong>Should</strong> load class with the OpenmrsClassLoader
 	 */
 	public static Class<?> loadClass(String className) throws ClassNotFoundException {
 		return OpenmrsClassLoader.getInstance().loadClass(className);
 	}
 
 	/**
-	 * Sets the user context on the thread local so that the service layer can perform
+	 * Sets the user context for the current thread so that the service layer can perform
 	 * authentication/authorization checks.<br>
 	 * <br>
-	 * This is thread safe since it stores the given user context in ThreadLocal.
+	 * This is thread safe since it stores the given user context in {@link ThreadLocal}, same as before
+	 * 3.0.0.
+	 * <p>
+	 * As of 3.0.0, also wraps <code>ctx</code> in an
+	 * {@link org.openmrs.security.OpenmrsAuthenticationToken} and installs that as the current thread's
+	 * {@link org.springframework.security.core.context.SecurityContext}, so that Spring Security's own
+	 * machinery ({@code @PreAuthorize}, {@code authorizeHttpRequests(...)}) has an
+	 * {@link org.springframework.security.core.Authentication} to evaluate - see
+	 * {@link #userContextHolder} for why that publication is derived, not the store of record.
 	 *
 	 * @param ctx UserContext to set
 	 */
 	public static void setUserContext(UserContext ctx) {
 		log.trace("Setting user context {}", ctx);
 
-		Object[] arr = new Object[] { ctx };
-		userContextHolder.set(arr);
+		userContextHolder.set(ctx);
+
+		SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
+		securityContext.setAuthentication(new OpenmrsAuthenticationToken(ctx));
+		SecurityContextHolder.setContext(securityContext);
 	}
 
 	/**
-	 * Clears the user context from the threadlocal.
+	 * Clears the user context from the current thread.
 	 */
 	public static void clearUserContext() {
-		log.trace("Clearing user context {}", Arrays.toString(userContextHolder.get()));
+		log.trace("Clearing user context");
 
 		userContextHolder.remove();
+		SecurityContextHolder.clearContext();
 	}
 
 	/**
-	 * Gets the user context from the thread local. This might be accessed by several threads at the
+	 * Gets the user context from the current thread. This might be accessed by several threads at the
 	 * same time.
+	 * <p>
+	 * <strong>Should</strong> fail if session hasn't been opened
 	 *
 	 * @return The current UserContext for this thread.
-	 * <strong>Should</strong> fail if session hasn't been opened
 	 */
 	public static UserContext getUserContext() {
-		Object[] arr = userContextHolder.get();
-		log.trace("Getting user context {} from userContextHolder {}", Arrays.toString(arr), userContextHolder);
+		UserContext userContext = userContextHolder.get();
+		log.trace("Getting user context {}", userContext);
 
-		if (arr == null) {
+		if (userContext == null) {
 			log.trace("userContext is null.");
 			throw new APIException(
-					"A user context must first be passed to setUserContext()...use Context.openSession() (and closeSession() to prevent memory leaks!) before using the API");
+			        "A user context must first be passed to setUserContext()...use Context.openSession() (and closeSession() to prevent memory leaks!) before using the API");
 		}
-		return (UserContext) userContextHolder.get()[0];
+		return userContext;
 	}
 
 	/**
-	 * Gets the currently defined service context. If one is not defined, one will be created and
-	 * then returned.
+	 * Gets the currently defined service context. If one is not defined, one will be created and then
+	 * returned.
 	 *
 	 * @return the current ServiceContext
 	 */
@@ -270,13 +296,10 @@ public class Context {
 		if (serviceContext == null) {
 			synchronized (Context.class) {
 				if (serviceContext == null) {
-					log.error("serviceContext is null.  Creating new ServiceContext()");
 					serviceContext = ServiceContext.getInstance();
 				}
 			}
 		}
-		log.trace("serviceContext: {}", serviceContext);
-
 		return ServiceContext.getInstance();
 	}
 
@@ -294,11 +317,11 @@ public class Context {
 	}
 
 	/**
-	 * OpenMRS provides its default authentication scheme that authenticates via DAO with OpenMRS usernames and passwords.
-	 * 
-	 * Any module can provide an authentication scheme override by Spring wiring a custom implementation of {@link AuthenticationScheme}.
-	 * This method would return Core's default authentication scheme unless a Spring override is provided somewhere else.
-	 * 
+	 * OpenMRS provides its default authentication scheme that authenticates via DAO with OpenMRS
+	 * usernames and passwords. Any module can provide an authentication scheme override by Spring
+	 * wiring a custom implementation of {@link AuthenticationScheme}. This method would return Core's
+	 * default authentication scheme unless a Spring override is provided somewhere else.
+	 *
 	 * @return The enforced authentication scheme.
 	 */
 	public static AuthenticationScheme getAuthenticationScheme() {
@@ -306,18 +329,23 @@ public class Context {
 	}
 
 	/**
-	 * @deprecated as of 2.3.0, replaced by {@link #authenticate(Credentials)}
-	 * 
-	 * Used to authenticate user within the context
+	 * <p>
+	 * <strong>Should</strong> not authenticate with null username and password<br/>
+	 * <strong>Should</strong> not authenticate with null password<br/>
+	 * <strong>Should</strong> not authenticate with null username<br/>
+	 * <strong>Should</strong> not authenticate with null password and proper username<br/>
+	 * <strong>Should</strong> not authenticate with null password and proper system id
 	 *
+	 * @deprecated as of 2.3.0, replaced by {@link #authenticate(Credentials)} Used to authenticate user
+	 *             within the context. As of 3.0.0, {@link #authenticate(Credentials)} itself routes
+	 *             through Spring Security's
+	 *             {@link org.springframework.security.authentication.AuthenticationManager} (see
+	 *             {@link org.openmrs.security.AuthenticationSchemeAuthenticationProvider}), which in
+	 *             turn invokes whichever {@link AuthenticationScheme} is configured - this is the real
+	 *             entry point for authentication now.
 	 * @param username user's identifier token for login
 	 * @param password user's password for authenticating to context
 	 * @throws ContextAuthenticationException
-	 * <strong>Should</strong> not authenticate with null username and password
-	 * <strong>Should</strong> not authenticate with null password
-	 * <strong>Should</strong> not authenticate with null username
-	 * <strong>Should</strong> not authenticate with null password and proper username
-	 * <strong>Should</strong> not authenticate with null password and proper system id
 	 */
 	@Deprecated
 	public static void authenticate(String username, String password) throws ContextAuthenticationException {
@@ -327,15 +355,15 @@ public class Context {
 	/**
 	 * @param credentials
 	 * @throws ContextAuthenticationException
-	 * 
 	 * @since 2.3.0
 	 */
 	public static Authenticated authenticate(Credentials credentials) throws ContextAuthenticationException {
 
 		if (Daemon.isDaemonThread()) {
 			log.error("Authentication attempted while operating on a "
-					+ "daemon thread, authenticating is not necessary or allowed");
-			return new BasicAuthenticated(Daemon.getDaemonThreadUser(), "No auth scheme used by Context - Daemon user is always authenticated.");
+			        + "daemon thread, authenticating is not necessary or allowed");
+			return new BasicAuthenticated(Daemon.getDaemonThreadUser(),
+			        "No auth scheme used by Context - Daemon user is always authenticated.");
 		}
 
 		if (credentials == null) {
@@ -347,11 +375,12 @@ public class Context {
 
 	/**
 	 * Refresh the authenticated user object in the current UserContext. This should be used when
-	 * updating information in the database about the current user and it needs to be reflecting in
-	 * the (cached) {@link #getAuthenticatedUser()} User object.
+	 * updating information in the database about the current user and it needs to be reflecting in the
+	 * (cached) {@link #getAuthenticatedUser()} User object.
+	 * <p>
+	 * <strong>Should</strong> get fresh values from the database
 	 *
 	 * @since 1.5
-	 * <strong>Should</strong> get fresh values from the database
 	 */
 	public static void refreshAuthenticatedUser() {
 		if (Daemon.isDaemonThread()) {
@@ -364,27 +393,16 @@ public class Context {
 
 	/**
 	 * Become a different user. (You should only be able to do this as a superuser.)
+	 * <p>
+	 * <strong>Should</strong> change locale when become another user
 	 *
 	 * @param systemId
 	 * @throws ContextAuthenticationException
-	 * <strong>Should</strong> change locale when become another user
 	 */
 	public static void becomeUser(String systemId) throws ContextAuthenticationException {
 		log.info("systemId: {}", systemId);
 
-		User user = getUserContext().becomeUser(systemId);
-
-		// if assuming identity procedure finished successfully, we should change context locale parameter
-		Locale locale = null;
-		if (user.getUserProperties().containsKey(OpenmrsConstants.USER_PROPERTY_DEFAULT_LOCALE)) {
-			String localeString = user.getUserProperty(OpenmrsConstants.USER_PROPERTY_DEFAULT_LOCALE);
-			locale = LocaleUtility.fromSpecification(localeString);
-		}
-		// when locale parameter is not valid or does not exist
-		if (locale == null) {
-			locale = LocaleUtility.getDefaultLocale();
-		}
-		Context.setLocale(locale);
+		getUserContext().becomeUser(systemId);
 	}
 
 	/**
@@ -393,11 +411,10 @@ public class Context {
 	 * @return copy of the runtime properties
 	 */
 	public static Properties getRuntimeProperties() {
-		log.trace("getting runtime properties. size: {}", runtimeProperties.size());
-
 		Properties props = new Properties();
-		props.putAll(runtimeProperties);
-
+		if (runtimeProperties != null) {
+			props.putAll(runtimeProperties);
+		}
 		return props;
 	}
 
@@ -458,20 +475,26 @@ public class Context {
 
 	/**
 	 * @return condition-related services
-	 * 
 	 * @since 2.2
 	 */
-	public static ConditionService getConditionService(){
+	public static ConditionService getConditionService() {
 		return getServiceContext().getConditionService();
 	}
 
 	/**
 	 * @return diagnosis-related services
-	 *
 	 * @since 2.2
 	 */
-	public static DiagnosisService getDiagnosisService(){
+	public static DiagnosisService getDiagnosisService() {
 		return getServiceContext().getDiagnosisService();
+	}
+
+	/**
+	 * @return MedicationDispense-related service
+	 * @since 2.6.0
+	 */
+	public static MedicationDispenseService getMedicationDispenseService() {
+		return getServiceContext().getMedicationDispenseService();
 	}
 
 	/**
@@ -559,7 +582,7 @@ public class Context {
 	public static ProgramWorkflowService getProgramWorkflowService() {
 		return getServiceContext().getProgramWorkflowService();
 	}
-	
+
 	/**
 	 * Get the message service.
 	 *
@@ -577,16 +600,52 @@ public class Context {
 				ms.setMessageSender(getMessageSender());
 			}
 
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			log.error("Unable to create message service due", e);
 		}
 		return ms;
 	}
 
 	/**
-	 * Gets the mail session required by the mail message service. This function forces
-	 * authentication via the getAdministrationService() method call
+	 * @return all of the configured properties that are used to configure the Mail Session in the
+	 *         Message Service These properties are defined as all properties that are prefixed with
+	 *         "mail." and this will return all such properties as defined in global properties, runtime
+	 *         properties, and/or system properties, with system properties overriding runtime
+	 *         properties overriding global properties.
+	 */
+	public static Properties getMailProperties() {
+		Properties p = new Properties();
+		String prefix = "mail.";
+		for (GlobalProperty gp : getAdministrationService().getGlobalPropertiesByPrefix(prefix)) {
+			// Historically, some mail properties defined with underscores, support these for legacy compatibility
+			if (gp.getProperty().equals("mail.transport_protocol")) {
+				p.setProperty("mail.transport.protocol", gp.getPropertyValue());
+			} else if (gp.getProperty().equals("mail.smtp_host")) {
+				p.setProperty("mail.smtp.host", gp.getPropertyValue());
+			} else if (gp.getProperty().equals("mail.smtp_port")) {
+				p.setProperty("mail.smtp.port", gp.getPropertyValue());
+			} else if (gp.getProperty().equals("mail.smtp_auth")) {
+				p.setProperty("mail.smtp.auth", gp.getPropertyValue());
+			} else {
+				p.setProperty(gp.getProperty(), gp.getPropertyValue());
+			}
+		}
+		for (String runtimeProperty : runtimeProperties.stringPropertyNames()) {
+			if (runtimeProperty.startsWith(prefix)) {
+				p.setProperty(runtimeProperty, runtimeProperties.getProperty(runtimeProperty));
+			}
+		}
+		for (String systemProperty : System.getProperties().stringPropertyNames()) {
+			if (systemProperty.startsWith(prefix)) {
+				p.setProperty(systemProperty, System.getProperty(systemProperty));
+			}
+		}
+		return p;
+	}
+
+	/**
+	 * Gets the mail session required by the mail message service. This function forces authentication
+	 * via the getAdministrationService() method call
 	 *
 	 * @return a java mail session
 	 */
@@ -594,37 +653,24 @@ public class Context {
 		if (mailSession == null) {
 			synchronized (Context.class) {
 				if (mailSession == null) {
-					AdministrationService adminService = getAdministrationService();
-
-					Properties props = new Properties();
-					props.setProperty("mail.transport.protocol", adminService.getGlobalProperty("mail.transport_protocol"));
-					props.setProperty("mail.smtp.host", adminService.getGlobalProperty("mail.smtp_host"));
-					props.setProperty("mail.smtp.port", adminService.getGlobalProperty("mail.smtp_port"));
-					props.setProperty("mail.from", adminService.getGlobalProperty("mail.from"));
-					props.setProperty("mail.debug", adminService.getGlobalProperty("mail.debug"));
-					props.setProperty("mail.smtp.auth", adminService.getGlobalProperty("mail.smtp_auth"));
-					props.setProperty(OpenmrsConstants.GP_MAIL_SMTP_STARTTLS_ENABLE, adminService.getGlobalProperty(OpenmrsConstants.GP_MAIL_SMTP_STARTTLS_ENABLE));
-
 					Authenticator auth = new Authenticator() {
 
 						@Override
 						public PasswordAuthentication getPasswordAuthentication() {
-							return new PasswordAuthentication(getAdministrationService().getGlobalProperty("mail.user"),
-									getAdministrationService().getGlobalProperty("mail.password"));
+							return new PasswordAuthentication(ConfigUtil.getProperty("mail.user"),
+							        ConfigUtil.getProperty("mail.password"));
 						}
 					};
-
-					mailSession = Session.getInstance(props, auth);
+					mailSession = Session.getInstance(getMailProperties(), auth);
 				}
 			}
-
 		}
 		return mailSession;
 	}
 
 	/**
-	 * Convenience method to allow us to change the configuration more easily. TODO Ideally, we
-	 * would be using Spring's method injection to set the dependencies for the message service.
+	 * Convenience method to allow us to change the configuration more easily. TODO Ideally, we would be
+	 * using Spring's method injection to set the dependencies for the message service.
 	 *
 	 * @return the ServiceContext
 	 */
@@ -633,8 +679,8 @@ public class Context {
 	}
 
 	/**
-	 * Convenience method to allow us to change the configuration more easily. TODO See todo for
-	 * message sender.
+	 * Convenience method to allow us to change the configuration more easily. TODO See todo for message
+	 * sender.
 	 *
 	 * @return
 	 */
@@ -654,21 +700,53 @@ public class Context {
 	}
 
 	/**
+	 * Prefer this to the id on {@link #getAuthenticatedUser()}.
+	 *
+	 * @return the id of the authenticated user as loaded (see
+	 *         {@link UserContext#getAuthenticatedUserId()}), or of the daemon user on a daemon thread;
+	 *         null if no stored user is authenticated
+	 * @since 2.8.11
+	 */
+	public static Integer getAuthenticatedUserId() {
+		return getUserContext().getAuthenticatedUserId();
+	}
+
+	/**
 	 * @return true if user has been authenticated in this context
 	 */
 	public static boolean isAuthenticated() {
 		if (Daemon.isDaemonThread()) {
 			return true;
 		} else {
-			return getAuthenticatedUser() != null;
+			try {
+				return getAuthenticatedUser() != null;
+			} catch (APIException e) {
+				log.info(
+				    "Could not get authenticated user inside called to isAuthenticated(), assuming no user context has been defined",
+				    e);
+				return false;
+			}
 		}
 	}
 
 	/**
+	 * Used by {@link org.openmrs.aop.AuthorizationAdvice} to give access for unauthenticated users when
+	 * running initialization code with proxy privileges. See e.g.
+	 * {@link OutboxTaskSchedulerInitializer#afterSingletonsInstantiated()}.
+	 *
+	 * @return true if there are any proxy privileges
+	 * @since 2.9.0
+	 */
+	public static boolean hasProxyPrivileges() {
+		return getUserContext().hasProxyPrivileges();
+	}
+
+	/**
 	 * logs out the "active" (authenticated) user within context
+	 * <p>
+	 * <strong>Should</strong> not fail if session hasn't been opened yet
 	 *
 	 * @see #authenticate
-	 * <strong>Should</strong> not fail if session hasn't been opened yet
 	 */
 	public static void logout() {
 		if (!isSessionOpen()) {
@@ -691,9 +769,7 @@ public class Context {
 	}
 
 	/**
-	 * Convenience method. Passes through to userContext.hasPrivilege(String)
-	 *
-	 * <strong>Should</strong> give daemon user full privileges
+	 * Tests whether the currently authenticated user has a particular privilege
 	 */
 	public static boolean hasPrivilege(String privilege) {
 		// the daemon threads have access to all things
@@ -705,8 +781,28 @@ public class Context {
 	}
 
 	/**
-	 * Throws an exception if the currently authenticated user does not have the specified
-	 * privilege.
+	 * Tests whether the currently authenticated user has a particular privilege, optionally excluding
+	 * proxy privileges. Passing <code>false</code> checks only the user's granted roles (and the
+	 * anonymous and authenticated roles), so a proxy privilege added merely to invoke a service method
+	 * cannot satisfy a per-resource access check.
+	 *
+	 * @param privilege the privilege to check
+	 * @param includeProxyPrivileges whether proxy privileges may satisfy the check
+	 * @return true if the current user has the given privilege
+	 * @see UserContext#hasPrivilege(String, boolean)
+	 * @since 3.0.0, 2.9.0, 2.8.9
+	 */
+	public static boolean hasPrivilege(String privilege, boolean includeProxyPrivileges) {
+		// the daemon threads have access to all things
+		if (Daemon.isDaemonThread()) {
+			return true;
+		}
+
+		return getUserContext().hasPrivilege(privilege, includeProxyPrivileges);
+	}
+
+	/**
+	 * Throws an exception if the currently authenticated user does not have the specified privilege.
 	 *
 	 * @param privilege
 	 * @throws ContextAuthenticationException
@@ -716,7 +812,7 @@ public class Context {
 			String errorMessage;
 			if (StringUtils.isNotBlank(privilege)) {
 				errorMessage = Context.getMessageSourceService().getMessage("error.privilegesRequired",
-						new Object[] { privilege }, null);
+				    new Object[] { privilege }, Locale.getDefault());
 			} else {
 				//Should we even be here if the privilege is blank?
 				errorMessage = Context.getMessageSourceService().getMessage("error.privilegesRequiredNoArgs");
@@ -727,17 +823,93 @@ public class Context {
 	}
 
 	/**
-	 * Convenience method. Passes through to {@link UserContext#addProxyPrivilege(String)}
+	 * Adds one or more privileges to the list of privileges that that {@link #hasPrivilege(String)}
+	 * will regard as available regardless of whether the user would otherwise have the privilege.
+	 * <p/>
+	 * This is useful for situations where a system process may need access to some piece of data that
+	 * the user would not otherwise have access to, like a GlobalProperty. <strong>This facility should
+	 * not be used to return data to the user that they otherwise would be unable to see.</strong>
+	 * <p/>
+	 * The expected usage is:
+	 * <p/>
+	 * <pre>{@code
+	 * try {
+	 *   Context.addProxyPrivilege(&quot;AAA&quot;);
+	 *   Context.get*Service().methodRequiringAAAPrivilege();
+	 * }
+	 * finally {
+	 *   Context.removeProxyPrivilege(&quot;AAA&quot;);
+	 * }}
+	 * </pre>
+	 * <p/>
+	 *
+	 * @param privilege privileges to add in string form
+	 * @see #hasPrivilege(String)
+	 * @see #removeProxyPrivilege(String)
 	 */
 	public static void addProxyPrivilege(String privilege) {
 		getUserContext().addProxyPrivilege(privilege);
 	}
 
 	/**
-	 * Convenience method. Passes through to {@link UserContext#removeProxyPrivilege(String)}
+	 * Adds one or more privileges to the list of privileges that that {@link #hasPrivilege(String)}
+	 * will regard as available regardless of whether the user would otherwise have the privilege.
+	 * <p/>
+	 * This is useful for situations where a system process may need access to some piece of data that
+	 * the user would not otherwise have access to, like a GlobalProperty. <strong>This facility should
+	 * not be used to return data to the user that they otherwise would be unable to see.</strong>
+	 * <p/>
+	 * The expected usage is:
+	 * <p/>
+	 * <pre>{@code
+	 * try {
+	 *   Context.addProxyPrivilege(&quot;AAA&quot;);
+	 *   Context.get*Service().methodRequiringAAAPrivilege();
+	 * }
+	 * finally {
+	 *   Context.removeProxyPrivilege(&quot;AAA&quot;);
+	 * }}
+	 * </pre>
+	 * <p/>
+	 *
+	 * @param privileges privileges to add in string form
+	 * @see #hasPrivilege(String)
+	 * @see #removeProxyPrivilege(String...)
+	 * @since 3.0.0, 2.8.2, 2.7.8
+	 */
+	public static void addProxyPrivilege(String... privileges) {
+		getUserContext().addProxyPrivilege(privileges);
+	}
+
+	/**
+	 * Removes one or more privileges from the list of privileges that that
+	 * {@link #hasPrivilege(String)} will regard as available regardless of whether the user would
+	 * otherwise have the privilege.
+	 * <p/>
+	 * This is the compliment for {@link #addProxyPrivilege(String...)} to clean-up the context.
+	 * <p/>
+	 *
+	 * @param privilege privileges to remove in string form
+	 * @see #hasPrivilege(String)
+	 * @see #addProxyPrivilege(String)
 	 */
 	public static void removeProxyPrivilege(String privilege) {
 		getUserContext().removeProxyPrivilege(privilege);
+	}
+
+	/**
+	 * Removes a privilege from the list of privileges that that {@link #hasPrivilege(String)} will
+	 * regard as available regardless of whether the user would otherwise have the privilege.
+	 * <p/>
+	 * This is the compliment for {@link #addProxyPrivilege(String...)} to clean-up the context.
+	 * <p/>
+	 *
+	 * @param privileges privileges to remove in string form
+	 * @see #hasPrivilege(String)
+	 * @see #addProxyPrivilege(String...) * @since 3.0.0, 2.8.2, 2.7.8
+	 */
+	public static void removeProxyPrivilege(String... privileges) {
+		getUserContext().removeProxyPrivilege(privileges);
 	}
 
 	/**
@@ -749,7 +921,7 @@ public class Context {
 
 	/**
 	 * Convenience method. Passes through to {@link UserContext#getLocale()}
-	 *
+	 * <p>
 	 * <strong>Should</strong> not fail if session hasn't been opened
 	 */
 	public static Locale getLocale() {
@@ -805,9 +977,9 @@ public class Context {
 	}
 
 	/**
-	 * Clears cached changes made so far during this unit of work without writing them to the
-	 * database. If you call this method, and later call closeSession() or flushSession() your
-	 * changes are still lost.
+	 * Clears cached changes made so far during this unit of work without writing them to the database.
+	 * If you call this method, and later call closeSession() or flushSession() your changes are still
+	 * lost.
 	 */
 	public static void clearSession() {
 		log.trace("clearing session");
@@ -827,10 +999,11 @@ public class Context {
 	/**
 	 * This method tells whether {@link #openSession()} has been called or not already. If it hasn't
 	 * been called, some methods won't work correctly because a {@link UserContext} isn't available.
+	 * <p>
+	 * <strong>Should</strong> return true if session is closed
 	 *
 	 * @return true if {@link #openSession()} has been called already.
 	 * @since 1.5
-	 * <strong>Should</strong> return true if session is closed
 	 */
 	public static boolean isSessionOpen() {
 		return userContextHolder.get() != null;
@@ -838,6 +1011,7 @@ public class Context {
 
 	/**
 	 * Used to re-read the state of the given instance from the underlying database.
+	 *
 	 * @since 2.0
 	 * @param obj The object to refresh from the database in the session
 	 */
@@ -847,9 +1021,8 @@ public class Context {
 	}
 
 	/**
-	 * Used to clear a cached object out of a session in the middle of a unit of work. Future
-	 * updates to this object will not be saved. Future gets of this object will not fetch this
-	 * cached copy
+	 * Used to clear a cached object out of a session in the middle of a unit of work. Future updates to
+	 * this object will not be saved. Future gets of this object will not fetch this cached copy
 	 *
 	 * @param obj The object to evict/remove from the session
 	 */
@@ -859,24 +1032,56 @@ public class Context {
 	}
 
 	/**
+	 * Evicts the entity data for a particular entity instance.
+	 *
+	 * @param object entity instance to evict from the DB cache
+	 */
+	public static void evictEntity(OpenmrsObject object) {
+		log.debug("Clearing DB cache for entity: {} with id: {}", object.getClass(), object.getId());
+		getContextDAO().evictEntity(object);
+	}
+
+	/**
+	 * Evicts all entity data of a particular class from the given region.
+	 *
+	 * @param entityClass entity class to evict from the DB cache
+	 */
+	public static void evictAllEntities(Class<?> entityClass) {
+		log.debug("Clearing DB cache for entities of type: {}", entityClass);
+		getContextDAO().evictAllEntities(entityClass);
+	}
+
+	/**
+	 * Evicts data from both DB and API cache.
+	 */
+	public static void clearEntireCache() {
+		log.debug("Clearing DB cache");
+		getContextDAO().clearEntireCache();
+		log.debug("Clearing API cache");
+		getServiceContext().clearEntireApiCache();
+	}
+
+	/**
 	 * Starts the OpenMRS System Should be called prior to any kind of activity
 	 *
 	 * @param props Runtime properties to use for startup
-	 * @throws InputRequiredException if the {@link DatabaseUpdater} has determined that updates
-	 *             cannot continue without input from the user
+	 * @throws InputRequiredException if the {@link DatabaseUpdater} has determined that updates cannot
+	 *             continue without input from the user
 	 * @throws DatabaseUpdateException if database updates are required, see
 	 *             {@link DatabaseUpdater#executeChangelog()}
 	 * @throws ModuleMustStartException if a module that should be started is not able to
-	 * @see InputRequiredException#getRequiredInput() InputRequiredException#getRequiredInput() for
-	 *      the required question/datatypes
+	 * @see InputRequiredException#getRequiredInput() InputRequiredException#getRequiredInput() for the
+	 *      required question/datatypes
 	 */
-	public static synchronized void startup(Properties props) throws DatabaseUpdateException, InputRequiredException,
-	ModuleMustStartException {
+	public static synchronized void startup(Properties props)
+	        throws DatabaseUpdateException, InputRequiredException, ModuleMustStartException {
 		// do any context database specific startup
 		getContextDAO().startup(props);
 
-		// find/set/check whether the current database version is compatible
-		checkForDatabaseUpdates(props);
+		if (getAdministrationService().isCoreSetupOnVersionChangeNeeded()) {
+			log.info("Detected core version change. Running core setup hooks and Liquibase.");
+			getAdministrationService().runCoreSetupOnVersionChange();
+		}
 
 		// this should be first in the startup routines so that the application
 		// data directory can be set from the runtime properties
@@ -899,23 +1104,23 @@ public class Context {
 	 * Starts the OpenMRS System in a _non-webapp_ environment<br>
 	 * <br>
 	 * <b>Note:</b> This method calls {@link Context#openSession()}, so you must call
-	 * {@link Context#closeSession()} somewhere on the same thread of this application so as to not
-	 * leak memory.
+	 * {@link Context#closeSession()} somewhere on the same thread of this application so as to not leak
+	 * memory.
 	 *
 	 * @param url database url like "jdbc:mysql://localhost:3306/openmrs?autoReconnect=true"
 	 * @param username Connection username
 	 * @param password Connection password
 	 * @param properties Other startup properties
-	 * @throws InputRequiredException if the {@link DatabaseUpdater} has determined that updates
-	 *             cannot continue without input from the user
+	 * @throws InputRequiredException if the {@link DatabaseUpdater} has determined that updates cannot
+	 *             continue without input from the user
 	 * @throws DatabaseUpdateException if the database must be updated. See {@link DatabaseUpdater}
 	 * @throws ModuleMustStartException if a module that should start is not able to
 	 * @see #startup(Properties)
-	 * @see InputRequiredException#getRequiredInput() InputRequiredException#getRequiredInput() for
-	 *      the required question/datatypes
+	 * @see InputRequiredException#getRequiredInput() InputRequiredException#getRequiredInput() for the
+	 *      required question/datatypes
 	 */
 	public static synchronized void startup(String url, String username, String password, Properties properties)
-			throws DatabaseUpdateException, InputRequiredException, ModuleMustStartException {
+	        throws DatabaseUpdateException, InputRequiredException, ModuleMustStartException {
 		if (properties == null) {
 			properties = new Properties();
 		}
@@ -929,31 +1134,35 @@ public class Context {
 
 		startup(properties);
 
-		// start the scheduled tasks
-		SchedulerUtil.startup(properties);
+		Context.getSchedulerService().onStartup();
 
 		closeSession();
 	}
 
 	/**
-	 * Stops the OpenMRS System Should be called after all activity has ended and application is
-	 * closing
+	 * Stops the OpenMRS System Should be called after all activity has ended and application is closing
 	 */
 	public static void shutdown() {
 		log.debug("Shutting down the scheduler");
 		try {
-			// Needs to be shutdown before Hibernate
-			SchedulerUtil.shutdown();
-		}
-		catch (Exception e) {
-			log.warn("Error while shutting down scheduler service", e);
+			SchedulerService schedulerService = null;
+			try {
+				schedulerService = getSchedulerService();
+			} catch (APIException e) {
+				// pass
+			}
+			if (schedulerService != null) {
+				// stops running tasks before the modules and the database they use are shut down
+				schedulerService.onShutdown();
+			}
+		} catch (Exception e) {
+			log.warn("Error while shutting down the scheduler", e);
 		}
 
 		log.debug("Shutting down the modules");
 		try {
 			ModuleUtil.shutdown();
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			log.warn("Error while shutting down module system", e);
 		}
 
@@ -962,25 +1171,24 @@ public class Context {
 			ContextDAO dao = null;
 			try {
 				dao = getContextDAO();
-			}
-			catch (APIException e) {
+			} catch (APIException e) {
 				// pass
 			}
 			if (dao != null) {
 				dao.shutdown();
 			}
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			log.warn("Error while shutting down context dao", e);
 		}
 	}
 
 	/**
 	 * Used for getting services not in the previous get*Service() calls
+	 * <p>
+	 * <strong>Should</strong> return the same object when called multiple times for the same class
 	 *
 	 * @param cls The Class of the service to get
 	 * @return The requested Service
-	 * <strong>Should</strong> return the same object when called multiple times for the same class
 	 */
 	public static <T> T getService(Class<? extends T> cls) {
 		return getServiceContext().getService(cls);
@@ -993,6 +1201,7 @@ public class Context {
 	 *
 	 * @param cls
 	 * @param advisor
+	 * @deprecated since 3.0.0 use {@link AOPConfig}
 	 */
 	public static void addAdvisor(Class cls, Advisor advisor) {
 		getServiceContext().addAdvisor(cls, advisor);
@@ -1005,6 +1214,7 @@ public class Context {
 	 *
 	 * @param cls
 	 * @param advice
+	 * @deprecated since 3.0.0 use {@link AOPConfig}
 	 */
 	public static void addAdvice(Class cls, Advice advice) {
 		getServiceContext().addAdvice(cls, advice);
@@ -1015,6 +1225,7 @@ public class Context {
 	 *
 	 * @param cls
 	 * @param advisor
+	 * @deprecated since 3.0.0 use {@link AOPConfig}
 	 */
 	public static void removeAdvisor(Class cls, Advisor advisor) {
 		getServiceContext().removeAdvisor(cls, advisor);
@@ -1025,6 +1236,7 @@ public class Context {
 	 *
 	 * @param cls
 	 * @param advice
+	 * @deprecated since 3.0.0 use {@link AOPConfig}
 	 */
 	public static void removeAdvice(Class cls, Advice advice) {
 		getServiceContext().removeAdvice(cls, advice);
@@ -1052,11 +1264,9 @@ public class Context {
 					Context.getUserService().saveRole(role);
 				}
 			}
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			log.error("Error while setting core roles for openmrs system", e);
-		}
-		finally {
+		} finally {
 			Context.removeProxyPrivilege(PrivilegeConstants.MANAGE_ROLES);
 		}
 
@@ -1077,11 +1287,9 @@ public class Context {
 					Context.getUserService().savePrivilege(p);
 				}
 			}
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			log.error("Error while setting core privileges", e);
-		}
-		finally {
+		} finally {
 			Context.removeProxyPrivilege(PrivilegeConstants.MANAGE_PRIVILEGES);
 		}
 
@@ -1127,11 +1335,9 @@ public class Context {
 					}
 				}
 			}
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			log.error("Error while setting core global properties", e);
-		}
-		finally {
+		} finally {
 			Context.removeProxyPrivilege(PrivilegeConstants.MANAGE_GLOBAL_PROPERTIES);
 			Context.removeProxyPrivilege(PrivilegeConstants.GET_GLOBAL_PROPERTIES);
 		}
@@ -1141,57 +1347,23 @@ public class Context {
 		Boolean disableValidation = Boolean.valueOf(as.getGlobalProperty(OpenmrsConstants.GP_DISABLE_VALIDATION, "false"));
 		ValidateUtil.setDisableValidation(disableValidation);
 
-		PersonName.setFormat(Context.getAdministrationService().getGlobalProperty(
-				OpenmrsConstants.GLOBAL_PROPERTY_LAYOUT_NAME_FORMAT));
+		PersonName.setFormat(
+		    Context.getAdministrationService().getGlobalProperty(OpenmrsConstants.GLOBAL_PROPERTY_LAYOUT_NAME_FORMAT));
 
-		Allergen.setOtherNonCodedConceptUuid(Context.getAdministrationService().getGlobalProperty(
-				OpenmrsConstants.GP_ALLERGEN_OTHER_NON_CODED_UUID));
-	}
-
-	/**
-	 * Runs any needed updates on the current database if the user has the allow_auto_update runtime
-	 * property set to true. If not set to true, then {@link #updateDatabase(Map)} must be called.<br>
-	 * <br>
-	 * If an {@link InputRequiredException} is thrown, a call to {@link #updateDatabase(Map)} is
-	 * required with a mapping from question prompt to user answer.
-	 *
-	 * @param props the runtime properties
-	 * @throws InputRequiredException if the {@link DatabaseUpdater} has determined that updates
-	 *             cannot continue without input from the user
-	 * @see InputRequiredException#getRequiredInput() InputRequiredException#getRequiredInput() for
-	 *      the required question/datatypes
-	 */
-	private static void checkForDatabaseUpdates(Properties props) throws DatabaseUpdateException, InputRequiredException {
-		boolean updatesRequired;
-		try {
-			updatesRequired = DatabaseUpdater.updatesRequired();
-		}
-		catch (Exception e) {
-			throw new DatabaseUpdateException("Unable to check if database updates are required", e);
-		}
-
-		// this must be the first thing run in case it changes database mappings
-		if (updatesRequired) {
-			if (DatabaseUpdater.allowAutoUpdate()) {
-				DatabaseUpdater.executeChangelog();
-			} else {
-				throw new DatabaseUpdateException(
-						"Database updates are required.  Call Context.updateDatabase() before .startup() to continue.");
-			}
-		}
+		Allergen.setOtherNonCodedConceptUuid(
+		    Context.getAdministrationService().getGlobalProperty(OpenmrsConstants.GP_ALLERGEN_OTHER_NON_CODED_UUID));
 	}
 
 	/**
 	 * Updates the openmrs database to the latest. This is only needed if using the API alone. <br>
 	 * <br>
-	 * The typical use-case would be: Try to {@link #startup(String, String, String, Properties)},
-	 * if that fails, call this method to get the database up to speed.
+	 * The typical use-case would be: Try to {@link #startup(String, String, String, Properties)}, if
+	 * that fails, call this method to get the database up to speed.
 	 *
 	 * @param userInput (can be null) responses from the user about needed input
 	 * @throws DatabaseUpdateException if an error occurred while updating
 	 * @since 1.5
 	 * @deprecated as of 2.4
-	 * 
 	 */
 	@Deprecated
 	public static void updateDatabase(Map<String, Object> userInput) throws DatabaseUpdateException {
@@ -1199,24 +1371,25 @@ public class Context {
 	}
 
 	/**
-	 * Gets the simple date format for the current user's locale. The format will be similar in size
-	 * to mm/dd/yyyy
+	 * Gets the simple date format for the current user's locale. The format will be similar in size to
+	 * mm/dd/yyyy
+	 * <p>
+	 * <strong>Should</strong> return a pattern with four y characters in it
 	 *
 	 * @return SimpleDateFormat for the user's current locale
 	 * @see org.openmrs.util.OpenmrsUtil#getDateFormat(Locale)
-	 * <strong>Should</strong> return a pattern with four y characters in it
 	 */
 	public static SimpleDateFormat getDateFormat() {
 		return OpenmrsUtil.getDateFormat(getLocale());
 	}
 
 	/**
-	 * Gets the simple time format for the current user's locale. The format will be similar to
-	 * hh:mm a
+	 * Gets the simple time format for the current user's locale. The format will be similar to hh:mm a
+	 * <p>
+	 * <strong>Should</strong> return a pattern with two h characters in it
 	 *
 	 * @return SimpleDateFormat for the user's current locale
 	 * @see org.openmrs.util.OpenmrsUtil#getTimeFormat(Locale)
-	 * <strong>Should</strong> return a pattern with two h characters in it
 	 */
 	public static SimpleDateFormat getTimeFormat() {
 		return OpenmrsUtil.getTimeFormat(getLocale());
@@ -1225,10 +1398,11 @@ public class Context {
 	/**
 	 * Gets the simple datetime format for the current user's locale. The format will be similar to
 	 * mm/dd/yyyy hh:mm a
+	 * <p>
+	 * <strong>Should</strong> return a pattern with four y characters and two h characters in it
 	 *
 	 * @return SimpleDateFormat for the user's current locale
 	 * @see org.openmrs.util.OpenmrsUtil#getDateTimeFormat(Locale)
-	 * <strong>Should</strong> return a pattern with four y characters and two h characters in it
 	 */
 	public static SimpleDateFormat getDateTimeFormat() {
 		return OpenmrsUtil.getDateTimeFormat(getLocale());
@@ -1324,8 +1498,8 @@ public class Context {
 	}
 
 	/**
-	 * Updates the search index. It is a blocking operation, which may take even a few minutes
-	 * depending on the index size.
+	 * Updates the search index. It is a blocking operation, which may take even a few minutes depending
+	 * on the index size.
 	 * <p>
 	 * There is no need to call this method in normal usage since the index is automatically updated
 	 * whenever DB transactions are committed.
@@ -1353,14 +1527,28 @@ public class Context {
 	}
 
 	/**
+	 * It should be used <b>IN TESTS ONLY</b>. See {@link #updateSearchIndex(Class[])} for normal use.
+	 * <p>
 	 * Updates the search index for objects of the given type.
 	 *
 	 * @see #updateSearchIndex()
+	 * @see #updateSearchIndex(Class[])
 	 * @param type
 	 * @since 1.11
 	 */
 	public static void updateSearchIndexForType(Class<?> type) {
 		getContextDAO().updateSearchIndexForType(type);
+	}
+
+	/**
+	 * Updates the search index for objects of the given types using mass indexer.
+	 *
+	 * @see #updateSearchIndex()
+	 * @param types
+	 * @since 2.8.0
+	 */
+	public static void updateSearchIndex(Class<?>... types) {
+		getContextDAO().updateSearchIndex(types);
 	}
 
 	/**
@@ -1388,5 +1576,28 @@ public class Context {
 	 */
 	public static boolean isUseSystemClassLoader() {
 		return getServiceContext().isUseSystemClassLoader();
+	}
+
+	/**
+	 * @return a Connection from the OpenMRS database connection pool
+	 * @since 2.5.7
+	 */
+	public static Connection getDatabaseConnection() {
+		return getContextDAO().getDatabaseConnection();
+	}
+
+	/**
+	 * It is used to shorten startup time by e.g. not running Liquibase checks, if versions did not
+	 * change or re-using expanded jars between restarts. If you want to force a standard startup
+	 * procedure without optimization, please set the <code>optimized.startup</code> runtime property to
+	 * <code>false</code>. (<code>true</code> by default)
+	 * <p>
+	 * See <a href="https://issues.openmrs.org/browse/TRUNK-6417">TRUNK-6417</a>
+	 *
+	 * @return <code>true</code> (default) or <code>false</code>
+	 * @since 2.9.0
+	 */
+	public static boolean isOptimizedStartup() {
+		return Boolean.parseBoolean(Context.getRuntimeProperties().getProperty("optimized.startup", "true"));
 	}
 }

@@ -9,6 +9,13 @@
  */
 package org.openmrs.module;
 
+import java.io.File;
+import java.net.URL;
+
+import org.junit.jupiter.api.Test;
+import org.openmrs.test.jupiter.BaseContextSensitiveTest;
+import org.openmrs.util.OpenmrsUtil;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -16,68 +23,21 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.File;
-import java.net.URL;
-
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
-import org.openmrs.test.jupiter.BaseContextSensitiveTest;
-import org.openmrs.util.OpenmrsUtil;
-
 /**
  * Tests methods on the {@link ModuleUtil} class
  */
 public class ModuleUtilIT extends BaseContextSensitiveTest {
-	
+
 	/**
 	 * This test requires a connection to the internet to pass
-	 * 
+	 *
 	 * @see ModuleUtil#getURLStream(URL)
 	 */
 	@Test
 	public void getURLStream_shouldReturnAValidInputStreamForOldModuleUrls() throws Exception {
 		ModuleUtil.getURLStream(new URL("https://dev.openmrs.org/modules/download/formentry/update.rdf"));
 	}
-	
-	/**
-	 * This test requires a connection to the internet to pass
-	 * 
-	 * @see ModuleUtil#getURL(URL)
-	 */
-	@Test
-	@Disabled
-	public void getURL_shouldReturnAnUpdateRdfPageForOldHttpsDevUrls() throws Exception {
-		String url = "https://dev.openmrs.org/modules/download/formentry/update.rdf";
-		String updateRdf = ModuleUtil.getURL(new URL(url));
-		assertTrue(updateRdf.contains("<updates"), "Unable to fetch module update url: " + url);
-	}
-	
-	/**
-	 * This test requires a connection to the internet to pass
-	 * 
-	 * @see ModuleUtil#getURL(URL)
-	 */
-	@Test
-	@Disabled
-	public void getURL_shouldReturnAnUpdateRdfPageForOldHttpsModuleUrls() throws Exception {
-		String url = "https://modules.openmrs.org/modules/download/formentry/update.rdf";
-		String updateRdf = ModuleUtil.getURL(new URL(url));
-		assertTrue(updateRdf.contains("<updates"), "Unable to fetch module update url: " + url);
-	}
-	
-	/**
-	 * This test requires a connection to the internet to pass
-	 * 
-	 * @see ModuleUtil#getURL(URL)
-	 */
-	@Test
-	@Disabled
-	public void getURL_shouldReturnAnUpdateRdfPageForModuleUrls() throws Exception {
-		String url = "http://modules.openmrs.org/modules/download/formentry/update.rdf";
-		String updateRdf = ModuleUtil.getURL(new URL(url));
-		assertTrue(updateRdf.contains("<updates"), "Unable to fetch module update url: " + url);
-	}
-	
+
 	/**
 	 * @see ModuleUtil#checkMandatoryModulesStarted()
 	 */
@@ -86,7 +46,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		executeDataSet("org/openmrs/module/include/mandatoryModulesGlobalProperties.xml");
 		assertThrows(MandatoryModuleException.class, () -> ModuleUtil.checkMandatoryModulesStarted());
 	}
-	
+
 	/**
 	 * @see ModuleUtil#getMandatoryModules()
 	 */
@@ -96,7 +56,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		assertEquals(1, ModuleUtil.getMandatoryModules().size());
 		assertEquals("firstmodule", ModuleUtil.getMandatoryModules().get(0));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -106,7 +66,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.2.3 - 1.4.4";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -116,7 +76,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.2.* - 1.4.*";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -128,7 +88,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		requiredOpenmrsVersion = "1.4.* - 1.4.5";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -138,7 +98,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.4.2";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -148,7 +108,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.4.*";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -158,7 +118,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.4.3a";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -168,7 +128,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.4.1a - 1.4.3a";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -178,7 +138,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.3.*a - 1.4.*a";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -190,7 +150,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		requiredOpenmrsVersion = "1.4.*a - 1.4.5a";
 		assertTrue(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -202,7 +162,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		requiredOpenmrsVersion = "1.5.*";
 		assertFalse(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -212,7 +172,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.5.*";
 		assertFalse(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -223,7 +183,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.5.* - 1.6.*";
 		assertFalse(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -236,17 +196,18 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		requiredOpenmrsVersion = "1.5.* - 1.6.0";
 		assertFalse(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
 	@Test
-	public void matchRequiredVersions_shouldReturnFalseWhenSingleEntryRequiredVersionBeyondOpenmrsVersion() throws Exception {
+	public void matchRequiredVersions_shouldReturnFalseWhenSingleEntryRequiredVersionBeyondOpenmrsVersion()
+	        throws Exception {
 		String openmrsVersion = "1.4.3";
 		String requiredOpenmrsVersion = "1.5.0";
 		assertFalse(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#matchRequiredVersions(String,String)
 	 */
@@ -258,7 +219,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		requiredOpenmrsVersion = "1.5.*-dev - 1.6.0-dev";
 		assertFalse(ModuleUtil.matchRequiredVersions(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#getPathForResource(Module,String)
 	 */
@@ -269,7 +230,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String path = "/ui/springmvc/css/ui.css";
 		assertEquals("/css/ui.css", ModuleUtil.getPathForResource(module, path));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#getModuleForPath(String)
 	 */
@@ -279,12 +240,12 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		Module module = new Module("For Unit Test");
 		module.setModuleId("ui.springmvc");
 		ModuleFactory.getStartedModulesMap().put(module.getModuleId(), module);
-		
+
 		String path = "/ui/springmvc/css/ui.css";
 		assertEquals(module, ModuleUtil.getModuleForPath(path));
 		ModuleFactory.getStartedModulesMap().clear();
 	}
-	
+
 	/**
 	 * @see ModuleUtil#getModuleForPath(String)
 	 */
@@ -294,12 +255,12 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		Module module = new Module("For Unit Test");
 		module.setModuleId("ui");
 		ModuleFactory.getStartedModulesMap().put(module.getModuleId(), module);
-		
+
 		String path = "/ui/springmvc/css/ui.css";
 		assertEquals(module, ModuleUtil.getModuleForPath(path));
 		ModuleFactory.getStartedModulesMap().clear();
 	}
-	
+
 	/**
 	 * @see ModuleUtil#getModuleForPath(String)
 	 */
@@ -309,7 +270,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String path = "/ui/springmvc/css/ui.css";
 		assertNull(ModuleUtil.getModuleForPath(path));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#checkRequiredVersion(String, String)
 	 */
@@ -319,7 +280,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.3.*";
 		assertThrows(ModuleException.class, () -> ModuleUtil.checkRequiredVersion(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#checkRequiredVersion(String, String)
 	 */
@@ -329,7 +290,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.5.*";
 		assertThrows(ModuleException.class, () -> ModuleUtil.checkRequiredVersion(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#checkRequiredVersion(String, String)
 	 */
@@ -340,7 +301,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.5.* - 1.6.*";
 		assertThrows(ModuleException.class, () -> ModuleUtil.checkRequiredVersion(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#checkRequiredVersion(String, String)
 	 */
@@ -351,7 +312,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.4.5 - 1.5.*";
 		assertThrows(ModuleException.class, () -> ModuleUtil.checkRequiredVersion(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#checkRequiredVersion(String, String)
 	 */
@@ -362,7 +323,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String requiredOpenmrsVersion = "1.5.0";
 		assertThrows(ModuleException.class, () -> ModuleUtil.checkRequiredVersion(openmrsVersion, requiredOpenmrsVersion));
 	}
-	
+
 	/**
 	 * @see ModuleUtil#compareVersion(String,String)
 	 */
@@ -372,7 +333,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		String newerVersion = "2.1.10";
 		assertTrue(ModuleUtil.compareVersion(olderVersion, newerVersion) < 0);
 	}
-	
+
 	/**
 	 * @see ModuleUtil#compareVersion(String,String)
 	 */
@@ -384,7 +345,7 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		//should still return the correct value if the arguments are switched
 		assertTrue(ModuleUtil.compareVersion(olderVersion, newerVersion) < 0);
 	}
-	
+
 	/**
 	 * @see ModuleUtil#getModuleRepository()
 	 */
@@ -396,16 +357,14 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 		try {
 			testFolder = ModuleUtil.getModuleRepository();
 			assertNotNull(testFolder);
-			assertEquals(new File(OpenmrsUtil.getApplicationDataDirectory(), folderName), ModuleUtil
-			        .getModuleRepository());
-		}
-		finally {
+			assertEquals(new File(OpenmrsUtil.getApplicationDataDirectory(), folderName), ModuleUtil.getModuleRepository());
+		} finally {
 			if (testFolder != null)
 				testFolder.deleteOnExit();
 			runtimeProperties.setProperty(ModuleConstants.REPOSITORY_FOLDER_RUNTIME_PROPERTY, "");
 		}
 	}
-	
+
 	/**
 	 * @see ModuleUtil#getModuleRepository()
 	 */
@@ -413,15 +372,14 @@ public class ModuleUtilIT extends BaseContextSensitiveTest {
 	public void getModuleRepository_shouldReturnTheCorrectFileIfTheRuntimePropertyIsAnAbsolutePath() throws Exception {
 		final File expectedModuleRepo = new File(System.getProperty("java.io.tmpdir"), "test_folder");
 		expectedModuleRepo.mkdirs();
-		
-		runtimeProperties.setProperty(ModuleConstants.REPOSITORY_FOLDER_RUNTIME_PROPERTY, expectedModuleRepo
-		        .getAbsolutePath());
+
+		runtimeProperties.setProperty(ModuleConstants.REPOSITORY_FOLDER_RUNTIME_PROPERTY,
+		    expectedModuleRepo.getAbsolutePath());
 		try {
 			File testFolder = ModuleUtil.getModuleRepository();
 			assertNotNull(testFolder);
 			assertEquals(expectedModuleRepo, testFolder);
-		}
-		finally {
+		} finally {
 			runtimeProperties.setProperty(ModuleConstants.REPOSITORY_FOLDER_RUNTIME_PROPERTY, "");
 			expectedModuleRepo.deleteOnExit();
 		}

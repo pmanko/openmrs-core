@@ -13,7 +13,7 @@
    <parent>
       <groupId>org.openmrs</groupId>
       <artifactId>openmrs</artifactId>
-      <version>2.5.0-SNAPSHOT</version>
+      <version>3.0.0-SNAPSHOT</version>
    </parent>
    <modelVersion>4.0.0</modelVersion>
    <groupId>org.openmrs.web</groupId>
@@ -25,22 +25,18 @@
       <dependency>
          <groupId>org.openmrs.api</groupId>
          <artifactId>openmrs-api</artifactId>
+         <exclusions>
+         	<exclusion>
+         		<groupId>xml-apis</groupId>
+         		<artifactId>xml-apis</artifactId>
+         	</exclusion>
+         </exclusions>
       </dependency>
       <dependency>
          <groupId>org.openmrs.test</groupId>
          <artifactId>openmrs-test</artifactId>
          <type>pom</type>
          <scope>test</scope>
-		  <exclusions>
-			  <exclusion>
-				  <groupId>org.powermock</groupId>
-				  <artifactId>powermock-module-junit4</artifactId>
-			  </exclusion>
-			  <exclusion>
-				  <groupId>org.powermock</groupId>
-				  <artifactId>powermock-api-mockito2</artifactId>
-			  </exclusion>
-		  </exclusions>
       </dependency>
       <!-- Test-jar for sharing api test resources in web tests -->
       <dependency>
@@ -49,18 +45,27 @@
          <type>test-jar</type>
          <scope>test</scope>
       </dependency>
+	   <dependency>
+		   <groupId>com.fasterxml.jackson.core</groupId>
+		   <artifactId>jackson-core</artifactId>
+	   </dependency>
+	   <dependency>
+		   <groupId>jakarta.servlet.jsp</groupId>
+		   <artifactId>jakarta.servlet.jsp-api</artifactId>
+	   </dependency>
       <dependency>
-         <groupId>javax.servlet</groupId>
-         <artifactId>javax.servlet-api</artifactId>
+		  <groupId>jakarta.servlet</groupId>
+		  <artifactId>jakarta.servlet-api</artifactId>
+		  <scope>provided</scope>
       </dependency>
       <dependency>
-         <groupId>javax.servlet</groupId>
-         <artifactId>jsp-api</artifactId>
+		  <groupId>jakarta.servlet.jsp.jstl</groupId>
+		  <artifactId>jakarta.servlet.jsp.jstl-api</artifactId>
       </dependency>
-      <dependency>
-         <groupId>javax.servlet.jsp.jstl</groupId>
-         <artifactId>javax.servlet.jsp.jstl-api</artifactId>
-      </dependency>
+	   <dependency>
+		   <groupId>org.glassfish.web</groupId>
+		   <artifactId>jakarta.servlet.jsp.jstl</artifactId>
+	   </dependency>
       <dependency>
          <groupId>commons-io</groupId>
          <artifactId>commons-io</artifactId>
@@ -68,6 +73,10 @@
       <dependency>
          <groupId>commons-fileupload</groupId>
          <artifactId>commons-fileupload</artifactId>
+      </dependency>
+      <dependency>
+         <groupId>org.apache.commons</groupId>
+         <artifactId>commons-fileupload2-jakarta-servlet6</artifactId>
       </dependency>
       <dependency>
          <groupId>org.springframework</groupId>
@@ -82,29 +91,13 @@
          <artifactId>spring-oxm</artifactId>
        </dependency>
       <dependency>
-         <groupId>mysql</groupId>
-         <artifactId>mysql-connector-java</artifactId>
+         <groupId>org.springframework.security</groupId>
+         <artifactId>spring-security-web</artifactId>
       </dependency>
       <dependency>
-         <groupId>org.postgresql</groupId>
-         <artifactId>postgresql</artifactId>
+         <groupId>org.springframework.security</groupId>
+         <artifactId>spring-security-config</artifactId>
       </dependency>
-       <dependency>
-           <groupId>taglibs</groupId>
-           <artifactId>request</artifactId>
-       </dependency>
-       <dependency>
-           <groupId>taglibs</groupId>
-           <artifactId>response</artifactId>
-       </dependency>
-       <dependency>
-           <groupId>taglibs</groupId>
-           <artifactId>standard</artifactId>
-       </dependency>
-       <dependency>
-           <groupId>taglibs</groupId>
-           <artifactId>page</artifactId>
-       </dependency>
       <dependency>
          <groupId>org.liquibase</groupId>
          <artifactId>liquibase-core</artifactId>
@@ -114,8 +107,8 @@
          <artifactId>jcl-over-slf4j</artifactId>
       </dependency>
       <dependency>
-		 <groupId>org.apache.velocity</groupId>
-		 <artifactId>velocity-tools</artifactId>
+		 <groupId>org.apache.velocity.tools</groupId>
+		 <artifactId>velocity-tools-generic</artifactId>
 		 <exclusions>
 		 	<exclusion>
 		 		<groupId>dom4j</groupId>
@@ -126,8 +119,21 @@
       <dependency>
          <groupId>org.owasp.encoder</groupId>
          <artifactId>encoder</artifactId>
-         <version>1.2.3</version>
       </dependency>
+	   
+	   <dependency>
+		   <groupId>org.apache.tomcat</groupId>
+		   <artifactId>tomcat-jasper</artifactId>
+		   <scope>provided</scope>
+	   </dependency>
+	   <dependency>
+			<groupId>org.owasp</groupId>
+			<artifactId>csrfguard</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.owasp</groupId>
+			<artifactId>csrfguard-extension-session</artifactId>
+		</dependency>
    </dependencies>
 
    <build>
@@ -143,17 +149,6 @@
                   <java.awt.headless>true</java.awt.headless>
                </systemPropertyVariables>
             </configuration>
-         </plugin>
-         <plugin>
-            <groupId>com.googlecode.maven-java-formatter-plugin</groupId>
-            <artifactId>maven-java-formatter-plugin</artifactId>
-            <executions>
-               <execution>
-                  <goals>
-                     <goal>format</goal>
-                  </goals>
-               </execution>
-            </executions>
          </plugin>
 		 <plugin>
 			<groupId>org.jacoco</groupId>

@@ -9,7 +9,6 @@
  */
 package org.openmrs;
 
-import java.util.Date;
 import java.util.Locale;
 
 import org.openmrs.api.APIException;
@@ -19,10 +18,10 @@ import org.springframework.validation.ValidationUtils;
 /**
  * @since 1.10
  */
-public class FreeTextDosingInstructions implements DosingInstructions {
-	
+public class FreeTextDosingInstructions extends BaseDosingInstructions {
+
 	private String instructions;
-	
+
 	/**
 	 * @see DosingInstructions#getDosingInstructions(DrugOrder)
 	 */
@@ -30,7 +29,7 @@ public class FreeTextDosingInstructions implements DosingInstructions {
 	public String getDosingInstructionsAsString(Locale locale) {
 		return this.instructions;
 	}
-	
+
 	/**
 	 * @see DosingInstructions#setDosingInstructions(DrugOrder)
 	 */
@@ -39,39 +38,33 @@ public class FreeTextDosingInstructions implements DosingInstructions {
 		order.setDosingType(this.getClass());
 		order.setDosingInstructions(this.getInstructions());
 	}
-	
+
 	/**
 	 * @see DosingInstructions#getDosingInstructions(DrugOrder)
 	 */
 	@Override
 	public DosingInstructions getDosingInstructions(DrugOrder order) {
 		if (!order.getDosingType().equals(this.getClass())) {
-			throw new APIException("DrugOrder.error.dosingTypeIsMismatched", new Object[] { this.getClass(),
-			        order.getDosingType() });
+			throw new APIException("DrugOrder.error.dosingTypeIsMismatched",
+			        new Object[] { this.getClass(), order.getDosingType() });
 		}
 		FreeTextDosingInstructions freeTextDosingInstructions = new FreeTextDosingInstructions();
 		freeTextDosingInstructions.setInstructions(order.getDosingInstructions());
 		return freeTextDosingInstructions;
 	}
-	
+
 	@Override
 	public void validate(DrugOrder order, Errors errors) {
 		ValidationUtils.rejectIfEmpty(errors, "dosingInstructions",
 		    "DrugOrder.error.dosingInstructionsIsNullForDosingTypeFreeText");
-		
 	}
-	
-	@Override
-	public Date getAutoExpireDate(DrugOrder order) {
-		return null;
-	}
-	
+
 	public String getInstructions() {
 		return instructions;
 	}
-	
+
 	public void setInstructions(String instructions) {
 		this.instructions = instructions;
 	}
-	
+
 }

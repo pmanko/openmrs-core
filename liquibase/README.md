@@ -194,6 +194,20 @@ Alternatively, the corrections can be applied by running these commands:
 	
 Please note that the jar file needs to be created *before* generating the Liquibase snapshots as the build process will detect that the generated files do not (yet) contain the OpenMRS license header.
 
+#### Step 5 - Add the two PostgreSQL changesets to the liquibase-update-to-latest-version.xml file
+`<changeSet id="20200604-soundex_extension" author="aman" dbms="postgresql">
+    <comment> Soundex extension for PostgreSQL</comment>
+    <sql> CREATE EXTENSION IF NOT EXISTS fuzzystrmatch SCHEMA public;</sql>
+</changeSet>`
+    
+`<changeSet id="20200715-uuid_ossp_extension" author="aman" dbms="postgresql">
+    <comment> Extension to use UUID functions with PostgreSQL and creating an alias similar to MySQL</comment>
+    <sql>
+        CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA public;
+        CREATE FUNCTION UUID() RETURNS UUID LANGUAGE SQL AS $$ SELECT uuid_generate_v1() $$;
+    </sql>
+</changeSet>`
+
 ### How to test Liquibase snapshots
 
 Testing the (corrected) Liquibase snapshots comprises three steps:
@@ -268,11 +282,11 @@ For example, when creating snapshots for version 2.2.x of OpenMRS, the resulting
 In the folder `org/openmrs/liquibase/updates`, create an **empty** Liquibase change log file 
 called `liquibase-update-to-latest-<major.minor+1>.x.xml`. 
 
-Use `resources/liquibase-update-to-latest-template.xml` as a template for creating the new file.
+Use `api/src/main/resources/liquibase-update-to-latest-template.xml` as a template for creating the new file.
 
 For example, when adding snapshots from OpenMRS 2.2.x, the resulting file is:
 
-* `org/openmrs/liquibase/updates/liquibase-updates-2.3.x.xml`
+* `api/src/main/resources/org/openmrs/liquibase/updates/liquibase-update-to-latest-2.3.x.xml`
 
 The minor version number of the new update change log is increased by one as this file contains all Liquibase change 
 sets that are introduced 
@@ -281,6 +295,9 @@ sets that are introduced
 * and *before* OpenMRS version 2.3 will be created
 
 Include the new file in `resources/liquibase-update-to-latest-from-1.9.x.xml`, it is used by integration tests (as mentioned above).
+
+Increment, by one, the changeset count constant `CHANGE_SET_COUNT_FOR_GREATER_THAN_2_1_X` in `org.openmrs.util.DatabaseUpdaterDatabaseIT`
+This caters for the one empty changeset in the liquibase update file that you have just created.
 
 #### Step 3 - Update references in legacy Liquibase change log files
 The following files in `openmrs-core/api/src/main/resources` contain references to the latest Liquibase snapshot and 
@@ -304,7 +321,7 @@ liquibase files are compatible with the data types specified in the Hibernate ma
 
 The test can be run in two ways:
 
-* By running `mvn clean test -Pskip-default-test -Pintegration-test -Dtest=ValidateHibernateMappingsIT2` in the console
+* By running `mvn clean test -Pskip-default-test -Pintegration-test -Dtest=ValidateHibernateMappingsDatabaseIT` in the console from the `api` subproject.
 * Alternatively, by running the test in IntelliJ or another IDE 
 
 #### Step 6 - Build and initialise OpenMRS with the new snapshot and update files
@@ -368,6 +385,8 @@ The OpenMRS log file lists the change sets that were run. Validate that the expe
 [https://dev.mysql.com/doc/refman/8.0/en/mysql-batch-commands.html](https://dev.mysql.com/doc/refman/8.0/en/mysql-batch-commands.html)
 
 ## Appendix
+
+Please note that all these corrections are automatically applied by `scripts/fix_liquibase_snapshots.sh`
 
 #### Corrections needed for `liquibase-schema-only-SNAPSHOT.xml`
 

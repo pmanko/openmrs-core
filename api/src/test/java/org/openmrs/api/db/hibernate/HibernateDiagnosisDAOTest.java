@@ -9,10 +9,6 @@
  */
 package org.openmrs.api.db.hibernate;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
@@ -21,16 +17,20 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.openmrs.CodedOrFreeText;
 import org.openmrs.Concept;
-import org.openmrs.ConceptName;
 import org.openmrs.Condition;
 import org.openmrs.ConditionVerificationStatus;
 import org.openmrs.Diagnosis;
 import org.openmrs.Encounter;
 import org.openmrs.Patient;
 import org.openmrs.User;
+import org.openmrs.Visit;
 import org.openmrs.api.db.DiagnosisDAO;
 import org.openmrs.test.jupiter.BaseContextSensitiveTest;
 import org.springframework.beans.factory.annotation.Autowired;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class HibernateDiagnosisDAOTest extends BaseContextSensitiveTest {
 
@@ -47,27 +47,24 @@ public class HibernateDiagnosisDAOTest extends BaseContextSensitiveTest {
 
 	@Test
 	public void shouldSaveDiagnosis() {
-		CodedOrFreeText codedOrFreeText = new CodedOrFreeText(new Concept(4),
-			new ConceptName(5089), "non coded");
-		int diagnosisId = 5;
-		
+		CodedOrFreeText codedOrFreeText = new CodedOrFreeText(new Concept(4), null, "non coded");
+
 		Diagnosis diagnosis = new Diagnosis();
 		diagnosis.setEncounter(new Encounter(3));
 		diagnosis.setRank(2);
-		diagnosis.setId(diagnosisId);
 		diagnosis.setCertainty(ConditionVerificationStatus.CONFIRMED);
 		diagnosis.setPatient(new Patient(2));
 		diagnosis.setCondition(new Condition());
 		diagnosis.setDiagnosis(codedOrFreeText);
-		diagnosis.setUuid("4e663d96-6b78-11e0-93c3-18a9b5e044dc");
 		diagnosis.setCreator(new User(1));
 		diagnosis.setVoided(false);
 		diagnosis.setDateCreated(new Date());
 
 		diagnosisDAO.saveDiagnosis(diagnosis);
 
-		Diagnosis savedDiagnosis = diagnosisDAO.getDiagnosisById(diagnosisId);
-		
+		assertNotNull(diagnosis.getDiagnosisId());
+		Diagnosis savedDiagnosis = diagnosisDAO.getDiagnosisById(diagnosis.getDiagnosisId());
+
 		assertEquals(diagnosis.getUuid(), savedDiagnosis.getUuid());
 		assertEquals(diagnosis.getVoided(), savedDiagnosis.getVoided());
 		assertEquals(diagnosis.getRank(), savedDiagnosis.getRank());
@@ -92,13 +89,13 @@ public class HibernateDiagnosisDAOTest extends BaseContextSensitiveTest {
 
 	@Test
 	public void shouldGetActiveDiagnosesWithFromDate() {
-		Calendar calendar = new GregorianCalendar(2014,1,1,13,24,56);
-		assertEquals(1, diagnosisDAO.getActiveDiagnoses(new Patient(2), calendar.getTime()).size()); 
+		Calendar calendar = new GregorianCalendar(2014, 1, 1, 13, 24, 56);
+		assertEquals(1, diagnosisDAO.getActiveDiagnoses(new Patient(2), calendar.getTime()).size());
 	}
 
 	@Test
 	public void shouldGetActiveDiagnosesWithDifferentFromDate() {
-		Calendar calendar = new GregorianCalendar(2012,1,3,13,32,36);
+		Calendar calendar = new GregorianCalendar(2012, 1, 3, 13, 32, 36);
 		assertEquals(2, diagnosisDAO.getActiveDiagnoses(new Patient(2), calendar.getTime()).size());
 	}
 
@@ -108,15 +105,40 @@ public class HibernateDiagnosisDAOTest extends BaseContextSensitiveTest {
 	}
 
 	@Test
-	public void shouldGetDiagnoses() {
-		assertEquals(2, diagnosisDAO.getDiagnoses(new Encounter(3)).size());
-		assertEquals(0, diagnosisDAO.getDiagnoses(new Encounter(9)).size());
+	public void shouldGetDiagnosesByEncounter() {
+		assertEquals(2, diagnosisDAO.getDiagnosesByEncounter(new Encounter(3), false, false).size());
+		assertEquals(0, diagnosisDAO.getDiagnosesByEncounter(new Encounter(9), false, false).size());
 	}
 
 	@Test
-	public void shouldGetPrimaryDiagnoses() {
-		assertEquals(2, diagnosisDAO.getPrimaryDiagnoses(new Encounter(3)).size());
-		assertEquals(0, diagnosisDAO.getPrimaryDiagnoses(new Encounter(4)).size());
+	public void shouldGetPrimaryDiagnosesByEncounter() {
+		assertEquals(2, diagnosisDAO.getDiagnosesByEncounter(new Encounter(3), true, false).size());
+		assertEquals(0, diagnosisDAO.getDiagnosesByEncounter(new Encounter(4), true, false).size());
+	}
+
+	@Test
+	public void shouldGetConfirmedDiagnosesByEncounter() {
+		assertEquals(0, diagnosisDAO.getDiagnosesByEncounter(new Encounter(3), false, true).size());
+		assertEquals(1, diagnosisDAO.getDiagnosesByEncounter(new Encounter(4), false, true).size());
+	}
+
+	@Test
+	public void shouldGetDiagnosesByVisit() {
+		assertEquals(2, diagnosisDAO.getDiagnosesByVisit(new Visit(7), false, false).size());
+		assertEquals(2, diagnosisDAO.getDiagnosesByVisit(new Visit(8), false, false).size());
+		assertEquals(0, diagnosisDAO.getDiagnosesByVisit(new Visit(9), false, false).size());
+	}
+
+	@Test
+	public void shouldGetPrimaryDiagnosesByVisit() {
+		assertEquals(2, diagnosisDAO.getDiagnosesByVisit(new Visit(7), true, false).size());
+		assertEquals(0, diagnosisDAO.getDiagnosesByVisit(new Visit(8), true, false).size());
+	}
+
+	@Test
+	public void shouldGetConfirmedDiagnosesByVisit() {
+		assertEquals(0, diagnosisDAO.getDiagnosesByVisit(new Visit(7), false, true).size());
+		assertEquals(1, diagnosisDAO.getDiagnosesByVisit(new Visit(8), false, true).size());
 	}
 
 	@Test
@@ -125,6 +147,6 @@ public class HibernateDiagnosisDAOTest extends BaseContextSensitiveTest {
 		Diagnosis diagnosis = diagnosisDAO.getDiagnosisByUuid(uuid);
 		assertNotNull(diagnosis);
 		diagnosisDAO.deleteDiagnosis(diagnosis);
-		assertNull(diagnosisDAO.getDiagnosisByUuid(uuid)); 
+		assertNull(diagnosisDAO.getDiagnosisByUuid(uuid));
 	}
 }

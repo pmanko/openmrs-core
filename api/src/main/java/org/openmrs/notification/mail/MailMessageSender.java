@@ -9,12 +9,14 @@
  */
 package org.openmrs.notification.mail;
 
-import javax.mail.Session;
-import javax.mail.Transport;
-import javax.mail.internet.InternetAddress;
-import javax.mail.internet.MimeBodyPart;
-import javax.mail.internet.MimeMessage;
-import javax.mail.internet.MimeMultipart;
+import java.util.Properties;
+
+import jakarta.mail.Session;
+import jakarta.mail.Transport;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeBodyPart;
+import jakarta.mail.internet.MimeMessage;
+import jakarta.mail.internet.MimeMultipart;
 
 import org.openmrs.api.context.Context;
 import org.openmrs.notification.Message;
@@ -25,20 +27,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
 public class MailMessageSender implements MessageSender {
-	
+
 	private static final Logger log = LoggerFactory.getLogger(MailMessageSender.class);
-	
+
 	/**
-	 * JavaMail session
+	 * Jakarta Mail session
 	 */
 	private Session session;
-	
+
 	/**
 	 * Default public constructor.
 	 */
 	public MailMessageSender() {
 	}
-	
+
 	/**
 	 * Public constructor.
 	 *
@@ -47,16 +49,16 @@ public class MailMessageSender implements MessageSender {
 	public MailMessageSender(Session session) {
 		this.session = session;
 	}
-	
+
 	/**
-	 * Set javamail session.
+	 * Set Jakarta Mail session.
 	 *
 	 * @param session
 	 */
 	public void setMailSession(Session session) {
 		this.session = session;
 	}
-	
+
 	/**
 	 * Send the message.
 	 *
@@ -67,15 +69,14 @@ public class MailMessageSender implements MessageSender {
 		try {
 			MimeMessage mimeMessage = createMimeMessage(message);
 			Transport.send(mimeMessage);
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			log.error("failed to send message", e);
-			
+
 			// catch mail-specific exception and re-throw it as app-specific exception
 			throw new MessageException(e);
 		}
 	}
-	
+
 	/**
 	 * Converts the message object to a mime message in order to prepare it to be sent.
 	 *
@@ -83,41 +84,44 @@ public class MailMessageSender implements MessageSender {
 	 * @return MimeMessage
 	 */
 	public MimeMessage createMimeMessage(Message message) throws Exception {
-		
+
 		if (message.getRecipients() == null) {
 			throw new MessageException("Message must contain at least one recipient");
 		}
-		
+
+		Properties mailProperties = Context.getMailProperties();
+
 		// set the content-type to the default if it isn't defined in Message
 		if (!StringUtils.hasText(message.getContentType())) {
-			String contentType = Context.getAdministrationService().getGlobalProperty("mail.default_content_type");
-			message.setContentType(StringUtils.hasText(contentType) ? contentType : "text/plain");
+			String contentType = mailProperties.getProperty("mail.default_content_type", "text/plain");
+			message.setContentType(contentType);
 		}
-		
+
 		MimeMessage mimeMessage = new MimeMessage(session);
-		
-		if (message.getSender() != null) {
-			mimeMessage.setSender(new InternetAddress(message.getSender()));
-		} else {
-			String defaultFromMailAddress = Context.getAdministrationService().getGlobalProperty("mail.from");
-			if (StringUtils.hasText(defaultFromMailAddress)) {
-				mimeMessage.setSender(new InternetAddress(defaultFromMailAddress));
-			}
+
+		String sender = message.getSender();
+		if (!StringUtils.hasText(sender)) {
+			sender = mailProperties.getProperty("mail.from");
 		}
-		
-		mimeMessage.setRecipients(javax.mail.Message.RecipientType.TO,
+		if (StringUtils.hasText(sender)) {
+			InternetAddress senderAddress = new InternetAddress(sender);
+			mimeMessage.setFrom(senderAddress);
+			mimeMessage.setSender(senderAddress);
+		}
+
+		mimeMessage.setRecipients(jakarta.mail.Message.RecipientType.TO,
 		    InternetAddress.parse(message.getRecipients(), false));
 		mimeMessage.setSubject(message.getSubject());
-		
+
 		if (!message.hasAttachment()) {
 			mimeMessage.setContent(message.getContent(), message.getContentType());
 		} else {
 			mimeMessage.setContent(createMultipart(message));
 		}
-		
+
 		return mimeMessage;
 	}
-	
+
 	/**
 	 * Creates a MimeMultipart, so that we can have an attachment.
 	 *
@@ -126,18 +130,18 @@ public class MailMessageSender implements MessageSender {
 	 */
 	private MimeMultipart createMultipart(Message message) throws Exception {
 		MimeMultipart toReturn = new MimeMultipart();
-		
+
 		MimeBodyPart textContent = new MimeBodyPart();
 		textContent.setContent(message.getContent(), message.getContentType());
-		
+
 		MimeBodyPart attachment = new MimeBodyPart();
 		attachment.setContent(message.getAttachment(), message.getAttachmentContentType());
 		attachment.setFileName(message.getAttachmentFileName());
-		
+
 		toReturn.addBodyPart(textContent);
 		toReturn.addBodyPart(attachment);
-		
+
 		return toReturn;
 	}
-	
+
 }
